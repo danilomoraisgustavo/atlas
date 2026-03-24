@@ -12,8 +12,8 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: { pathname?: string } } };
   const { login } = useAuth();
-  const [email, setEmail] = useState('danilo.m.gustavo@gmail.com');
-  const [password, setPassword] = useState('DeD-140619');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (event: React.FormEvent) => {
