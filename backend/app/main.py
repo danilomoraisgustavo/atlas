@@ -4,7 +4,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from .database import Base, engine
 from .routers import admin, auth, maintenance, notifications, orders, vehicles
@@ -13,11 +13,22 @@ Base.metadata.create_all(bind=engine)
 
 
 def _ensure_order_columns():
-    with engine.begin() as connection:
-        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(service_orders)"))}
-        if 'estimated_completion' not in columns:
-            connection.execute(text("ALTER TABLE service_orders ADD COLUMN estimated_completion VARCHAR(40)"))
+    inspector = inspect(engine)
 
+    # Verifica se a tabela existe
+    if 'service_orders' not in inspector.get_table_names():
+        return
+
+    # Lista colunas existentes
+    columns = [col['name'] for col in inspector.get_columns('service_orders')]
+
+    # Adiciona coluna se não existir
+    if 'estimated_completion' not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("""
+                ALTER TABLE service_orders 
+                ADD COLUMN estimated_completion VARCHAR(40)
+            """))
 
 _ensure_order_columns()
 app = FastAPI(title='Atlas Frota API', version='1.0.0')
