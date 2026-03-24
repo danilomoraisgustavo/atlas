@@ -21,7 +21,12 @@ export type RequestOptions = RequestInit & {
 };
 
 function buildUrl(path: string, params?: RequestOptions['params']) {
-  const url = new URL(path.startsWith('http') ? path : `${API_BASE_URL}${path}`);
+  const normalizedUrl = path.startsWith('http')
+    ? path
+    : `${API_BASE_URL.replace(/\/$/, '')}/${path.replace(/^\//, '')}`;
+
+  const url = new URL(normalizedUrl, window.location.origin);
+
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== '') {
@@ -29,21 +34,26 @@ function buildUrl(path: string, params?: RequestOptions['params']) {
       }
     });
   }
+
   return url.toString();
 }
 
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers = new Headers(options.headers || {});
   const showLoader = options.showLoader !== false;
+
   if (!(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
+
   if (options.token) {
     headers.set('Authorization', `Bearer ${options.token}`);
   }
 
   if (showLoader && typeof window !== 'undefined') {
-    const defaultMessage = options.body instanceof FormData ? 'Enviando arquivos...' : 'Carregando informações...';
+    const defaultMessage =
+      options.body instanceof FormData ? 'Enviando arquivos...' : 'Carregando informações...';
+
     window.dispatchEvent(
       new CustomEvent(LOADING_START_EVENT, {
         detail: { message: options.loaderMessage || defaultMessage },
@@ -59,12 +69,14 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 
     if (!response.ok) {
       let detail = 'Erro inesperado na API';
+
       try {
         const payload = await response.json();
         detail = payload.detail || detail;
       } catch {
         detail = await response.text();
       }
+
       throw new ApiError(response.status, detail);
     }
 
@@ -73,6 +85,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
     }
 
     const contentType = response.headers.get('content-type') || '';
+
     if (contentType.includes('application/json')) {
       return response.json() as Promise<T>;
     }
