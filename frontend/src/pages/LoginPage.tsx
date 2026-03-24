@@ -57,11 +57,6 @@ export default function LoginPage() {
               {loading ? 'Entrando...' : 'Entrar'}
             </Button>
           </form>
-          <div className="mt-6 space-y-1.5 rounded-lg border bg-muted/40 p-4 text-xs">
-            <p className="font-medium">Credenciais iniciais</p>
-            <p><strong>Gestor:</strong> danilo.m.gustavo@gmail.com / DeD-140619</p>
-            <p><strong>Fornecedor:</strong> financeiro@tropicalcanaa.com.br / fornecedor@123</p>
-          </div>
         </CardContent>
       </Card>
     </div>
