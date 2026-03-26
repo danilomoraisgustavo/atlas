@@ -2,6 +2,7 @@ export type OrderStatus =
   | "rascunho"
   | "aguardando_aprovacao"
   | "aprovada"
+  | "aprovada_parcial"
   | "reprovada"
   | "em_andamento"
   | "aguardando_validacao"
@@ -131,6 +132,7 @@ export const STATUS_LABELS: Record<OrderStatus, string> = {
   rascunho: "Rascunho",
   aguardando_aprovacao: "Aguardando Aprovação",
   aprovada: "Aprovada",
+  aprovada_parcial: "Aprovação Parcial",
   reprovada: "Reprovada",
   em_andamento: "Em Andamento",
   aguardando_validacao: "Aguardando Validação",
@@ -143,6 +145,7 @@ export const STATUS_COLORS: Record<OrderStatus, string> = {
   rascunho: "bg-muted text-muted-foreground",
   aguardando_aprovacao: "bg-warning/15 text-warning",
   aprovada: "bg-info/15 text-info",
+  aprovada_parcial: "bg-warning/15 text-warning",
   reprovada: "bg-destructive/15 text-destructive",
   em_andamento: "bg-primary/15 text-primary",
   aguardando_validacao: "bg-warning/15 text-warning",

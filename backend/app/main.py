@@ -30,7 +30,32 @@ def _ensure_order_columns():
                 ADD COLUMN estimated_completion VARCHAR(40)
             """))
 
+def _ensure_order_item_columns():
+    inspector = inspect(engine)
+    if 'order_items' not in inspector.get_table_names():
+        return
+
+    columns = [col['name'] for col in inspector.get_columns('order_items')]
+
+    with engine.begin() as connection:
+        if 'service_execution_description' not in columns:
+            connection.execute(text("""
+                ALTER TABLE order_items
+                ADD COLUMN service_execution_description TEXT
+            """))
+        if 'approval_status' not in columns:
+            connection.execute(text("""
+                ALTER TABLE order_items
+                ADD COLUMN approval_status VARCHAR(20) DEFAULT 'pendente'
+            """))
+        if 'approval_reason' not in columns:
+            connection.execute(text("""
+                ALTER TABLE order_items
+                ADD COLUMN approval_reason TEXT
+            """))
+
 _ensure_order_columns()
+_ensure_order_item_columns()
 app = FastAPI(title='Atlas Frota API', version='1.0.0')
 cors_origins = [origin.strip() for origin in os.getenv('BACKEND_CORS_ORIGINS', '*').split(',') if origin.strip()]
 app.add_middleware(

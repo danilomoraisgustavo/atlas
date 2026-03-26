@@ -79,6 +79,9 @@ class OrderItem(Base, TimestampMixin):
     need_evidence_count = Column(Integer, default=1)
     done_evidence_count = Column(Integer, default=1)
     manually_edited = Column(Boolean, default=False)
+    service_execution_description = Column(Text, nullable=True)
+    approval_status = Column(String(20), default='pendente')
+    approval_reason = Column(Text, nullable=True)
 
     order = relationship('ServiceOrder', back_populates='items')
 

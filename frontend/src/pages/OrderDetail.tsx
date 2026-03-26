@@ -1,15 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { ArrowUpRight, Camera, CheckCircle2, ClipboardCheck, FileImage, FileText, Hammer, MessageSquareWarning, ShieldCheck, Video } from 'lucide-react';
+import { ArrowUpRight, Camera, ClipboardCheck, FileImage, FileText, Hammer, MessageSquareWarning, ShieldCheck, Video } from 'lucide-react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import { useAuth, getApiErrorMessage } from '@/contexts/AuthContext';
 import { API_BASE_URL, apiFetch } from '@/api/client';
-import type { OrderAttachment, ServiceOrder } from '@/types/app';
+import type { OrderAttachment, ServiceOrder, ServiceOrderItem } from '@/types/app';
 import { toast } from 'sonner';
 
 async function sendEvidence(token: string | null, orderId: number, category: string, itemId: number, file: File) {
@@ -32,6 +34,20 @@ function toDateTimeLocal(value: string | null) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function isApprovedForExecution(item: ServiceOrderItem) {
+  return item.approval_status !== 'devolvido';
+}
+
+function getApprovalBadge(item: ServiceOrderItem) {
+  if (item.approval_status === 'aprovado') {
+    return { label: 'Item aprovado', className: 'bg-success/15 text-success' };
+  }
+  if (item.approval_status === 'devolvido') {
+    return { label: 'Devolvido ao fornecedor', className: 'bg-destructive/15 text-destructive' };
+  }
+  return { label: 'Aguardando decisão', className: 'bg-warning/15 text-warning' };
+}
+
 export default function OrderDetail() {
   const { id } = useParams();
   const orderId = Number(id);
@@ -40,12 +56,22 @@ export default function OrderDetail() {
   const [justification, setJustification] = useState('');
   const [estimatedCompletion, setEstimatedCompletion] = useState('');
   const [uploadingKey, setUploadingKey] = useState<string | null>(null);
+  const [selectedItems, setSelectedItems] = useState<Record<number, boolean>>({});
+  const [returnedReasons, setReturnedReasons] = useState<Record<number, string>>({});
   const canManage = user?.role !== 'fornecedor';
+
+  const syncApprovalState = (data: ServiceOrder) => {
+    setSelectedItems(() => Object.fromEntries(data.items.map((item) => [item.id, item.approval_status !== 'devolvido'])));
+    setReturnedReasons(() =>
+      Object.fromEntries(data.items.filter((item) => item.approval_reason).map((item) => [item.id, item.approval_reason || ''])),
+    );
+  };
 
   const loadOrder = async () => {
     try {
       const data = await apiFetch<ServiceOrder>(`/orders/${orderId}`, { token });
       setOrder(data);
+      syncApprovalState(data);
       setEstimatedCompletion((current) => current || toDateTimeLocal(data.estimated_completion));
     } catch (error) {
       toast.error(getApiErrorMessage(error));
@@ -67,20 +93,38 @@ export default function OrderDetail() {
     return { before, after };
   }, [order]);
 
+  const executableItems = useMemo(() => {
+    if (!order?.items.length) return [];
+    const approved = order.items.filter((item) => isApprovedForExecution(item));
+    return approved.length ? approved : order.items;
+  }, [order]);
+
   const progress = useMemo(() => {
-    if (!order?.items.length) return 0;
-    const complete = order.items.filter((item) => {
+    if (!executableItems.length) return 0;
+    const complete = executableItems.filter((item) => {
       const beforeComplete = (grouped.before.get(item.id)?.length || 0) >= item.need_evidence_count;
       const afterComplete = (grouped.after.get(item.id)?.length || 0) >= item.done_evidence_count;
       return beforeComplete && afterComplete;
     }).length;
-    return Math.round((complete / order.items.length) * 100);
-  }, [grouped.after, grouped.before, order]);
+    return Math.round((complete / executableItems.length) * 100);
+  }, [executableItems, grouped.after, grouped.before]);
 
   const afterEvidenceComplete = useMemo(() => {
-    if (!order?.items.length) return false;
-    return order.items.every((item) => (grouped.after.get(item.id)?.length || 0) >= item.done_evidence_count);
-  }, [grouped.after, order]);
+    if (!executableItems.length) return false;
+    return executableItems.every((item) => (grouped.after.get(item.id)?.length || 0) >= item.done_evidence_count);
+  }, [executableItems, grouped.after]);
+
+  const partialApprovalSummary = useMemo(() => {
+    if (!order) return { approvedIds: [] as number[], returnedItems: [] as Array<{ item_id: number; reason: string }>, valid: false, isPartial: false };
+
+    const approvedIds = order.items.filter((item) => selectedItems[item.id]).map((item) => item.id);
+    const returnedItems = order.items
+      .filter((item) => !selectedItems[item.id])
+      .map((item) => ({ item_id: item.id, reason: (returnedReasons[item.id] || '').trim() }));
+    const isPartial = approvedIds.length > 0 && returnedItems.length > 0;
+    const valid = isPartial && returnedItems.every((item) => item.reason.length > 0);
+    return { approvedIds, returnedItems, valid, isPartial };
+  }, [order, returnedReasons, selectedItems]);
 
   const action = async (path: string, body?: Record<string, unknown>) => {
     try {
@@ -91,6 +135,18 @@ export default function OrderDetail() {
     } catch (error) {
       toast.error(getApiErrorMessage(error));
     }
+  };
+
+  const handlePartialApproval = async () => {
+    if (!partialApprovalSummary.valid) {
+      toast.error('Selecione os itens aprovados e informe o motivo dos itens devolvidos.');
+      return;
+    }
+
+    await action('approve', {
+      approved_item_ids: partialApprovalSummary.approvedIds,
+      returned_items: partialApprovalSummary.returnedItems,
+    });
   };
 
   const handleAttachmentUpload = async (itemId: number, category: 'before' | 'after', file: File | null) => {
@@ -199,15 +255,19 @@ export default function OrderDetail() {
                 const afterAttachments = grouped.after.get(item.id) || [];
                 const beforeComplete = beforeAttachments.length >= item.need_evidence_count;
                 const afterComplete = afterAttachments.length >= item.done_evidence_count;
+                const approvalBadge = getApprovalBadge(item);
+                const executable = isApprovedForExecution(item);
+                const manageApproval = canManage && order.status === 'aguardando_aprovacao';
 
                 return (
                   <div key={item.id} className="rounded-3xl border border-border/70 bg-background/80 p-5">
                     <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                      <div className="space-y-2">
+                      <div className="space-y-3 xl:max-w-xl">
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge variant="outline" className="rounded-full border-border/70 bg-card px-3 py-1 text-xs">
                             {item.item_type}
                           </Badge>
+                          <Badge className={`rounded-full px-3 py-1 text-xs ${approvalBadge.className}`}>{approvalBadge.label}</Badge>
                           <Badge className={`rounded-full px-3 py-1 text-xs ${beforeComplete ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'}`}>
                             Antes {beforeAttachments.length}/{item.need_evidence_count}
                           </Badge>
@@ -219,6 +279,51 @@ export default function OrderDetail() {
                         <p className="text-sm text-muted-foreground">
                           {item.quantity} {item.unit} • {formatCurrency(item.total_price)} • Código {item.item_code || 'não informado'}
                         </p>
+                        {item.service_execution_description ? (
+                          <div className="rounded-2xl border border-primary/20 bg-primary/5 p-3 text-sm">
+                            <p className="font-medium text-primary">Descrição informada pelo fornecedor</p>
+                            <p className="mt-1 text-muted-foreground">{item.service_execution_description}</p>
+                          </div>
+                        ) : null}
+                        {item.approval_reason ? (
+                          <div className="rounded-2xl border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive">
+                            <p className="font-medium">Motivo da devolução</p>
+                            <p className="mt-1">{item.approval_reason}</p>
+                          </div>
+                        ) : null}
+                        {manageApproval ? (
+                          <div className="rounded-2xl border border-border/70 bg-card/60 p-4">
+                            <div className="flex items-start gap-3">
+                              <Checkbox
+                                id={`approve-item-${item.id}`}
+                                checked={selectedItems[item.id] ?? true}
+                                onCheckedChange={(checked) => {
+                                  const approved = Boolean(checked);
+                                  setSelectedItems((current) => ({ ...current, [item.id]: approved }));
+                                  if (approved) {
+                                    setReturnedReasons((current) => ({ ...current, [item.id]: '' }));
+                                  }
+                                }}
+                              />
+                              <div className="space-y-2">
+                                <Label htmlFor={`approve-item-${item.id}`} className="font-medium">
+                                  Aprovar este item para execução
+                                </Label>
+                                <p className="text-xs text-muted-foreground">
+                                  Desmarque para devolver ao fornecedor pedindo ajuste específico neste item.
+                                </p>
+                              </div>
+                            </div>
+                            {!selectedItems[item.id] ? (
+                              <Textarea
+                                value={returnedReasons[item.id] || ''}
+                                onChange={(e) => setReturnedReasons((current) => ({ ...current, [item.id]: e.target.value }))}
+                                placeholder="Explique ao fornecedor o que precisa ser corrigido neste item"
+                                className="mt-3 min-h-24 rounded-2xl border-border/70 bg-background/80"
+                              />
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="grid w-full max-w-3xl gap-4 lg:grid-cols-2">
@@ -227,7 +332,8 @@ export default function OrderDetail() {
                           tone="text-primary"
                           attachments={beforeAttachments}
                           emptyLabel="Nenhuma evidência inicial enviada."
-                          canUpload={!canManage}
+                          canUpload={!canManage && executable}
+                          blockedMessage={executable ? undefined : 'Item devolvido ao fornecedor. Este item não segue para execução agora.'}
                           inputKey={`before-${item.id}`}
                           uploadingKey={uploadingKey}
                           onUpload={(file) => void handleAttachmentUpload(item.id, 'before', file)}
@@ -237,7 +343,8 @@ export default function OrderDetail() {
                           tone="text-success"
                           attachments={afterAttachments}
                           emptyLabel="Nenhuma evidência final enviada."
-                          canUpload={!canManage}
+                          canUpload={!canManage && executable}
+                          blockedMessage={executable ? undefined : 'Item devolvido ao fornecedor. A execução deste item está suspensa até novo envio.'}
                           inputKey={`after-${item.id}`}
                           uploadingKey={uploadingKey}
                           onUpload={(file) => void handleAttachmentUpload(item.id, 'after', file)}
@@ -284,8 +391,19 @@ export default function OrderDetail() {
                 <>
                   <Button className="w-full rounded-2xl" onClick={() => action('approve')}>
                     <ShieldCheck className="h-4 w-4" />
-                    Aprovar OS
+                    Aprovar OS inteira
                   </Button>
+                  {order.status === 'aguardando_aprovacao' ? (
+                    <Button className="w-full rounded-2xl" variant="secondary" disabled={!partialApprovalSummary.valid} onClick={() => void handlePartialApproval()}>
+                      <ShieldCheck className="h-4 w-4" />
+                      Aprovar parcialmente
+                    </Button>
+                  ) : null}
+                  {order.status === 'aguardando_aprovacao' && partialApprovalSummary.isPartial && !partialApprovalSummary.valid ? (
+                    <p className="text-xs text-warning">
+                      Para aprovação parcial, deixe alguns itens marcados como aprovados e preencha o motivo dos itens devolvidos.
+                    </p>
+                  ) : null}
                   <Button className="w-full rounded-2xl" variant="secondary" onClick={() => action('validate')}>
                     <ClipboardCheck className="h-4 w-4" />
                     Validar serviço
@@ -329,6 +447,12 @@ export default function OrderDetail() {
                     </Button>
                   </div>
 
+                  {order.status === 'aprovada_parcial' ? (
+                    <div className="rounded-2xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+                      Apenas os itens aprovados seguem para execução. Os demais ficaram devolvidos ao fornecedor com o motivo informado no item.
+                    </div>
+                  ) : null}
+
                   <Textarea
                     value={justification}
                     onChange={(e) => setJustification(e.target.value)}
@@ -345,7 +469,7 @@ export default function OrderDetail() {
                   </Button>
                   {!afterEvidenceComplete ? (
                     <p className="text-xs text-warning">
-                      Envie todas as fotos dos serviços realizados antes de finalizar.
+                      Envie todas as fotos dos serviços aprovados antes de finalizar.
                     </p>
                   ) : null}
                 </>
@@ -388,6 +512,7 @@ function EvidenceBlock({
   attachments,
   emptyLabel,
   canUpload,
+  blockedMessage,
   inputKey,
   uploadingKey,
   onUpload,
@@ -397,6 +522,7 @@ function EvidenceBlock({
   attachments: OrderAttachment[];
   emptyLabel: string;
   canUpload: boolean;
+  blockedMessage?: string;
   inputKey: string;
   uploadingKey: string | null;
   onUpload: (file: File | null) => void;
@@ -421,7 +547,7 @@ function EvidenceBlock({
         />
       ) : (
         <div className="rounded-2xl border border-dashed border-border p-3 text-xs text-muted-foreground">
-          Somente o fornecedor pode enviar arquivos nesta etapa.
+          {blockedMessage || 'Somente o fornecedor pode enviar arquivos nesta etapa.'}
         </div>
       )}
       <div className="mt-3 grid grid-cols-2 gap-2">
@@ -461,3 +587,4 @@ function EvidencePreview({ attachment }: { attachment: OrderAttachment }) {
     </a>
   );
 }
+

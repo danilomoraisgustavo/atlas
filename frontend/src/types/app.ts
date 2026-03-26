@@ -16,6 +16,7 @@ export interface LoginResponse {
 export interface DashboardMetrics {
   aguardando_aprovacao: number;
   aprovada: number;
+  aprovada_parcial: number;
   reprovada: number;
   em_andamento: number;
   aguardando_validacao: number;
@@ -60,6 +61,9 @@ export interface ServiceOrderItem {
   need_evidence_count: number;
   done_evidence_count: number;
   manually_edited?: boolean;
+  service_execution_description?: string | null;
+  approval_status?: 'pendente' | 'aprovado' | 'devolvido' | string;
+  approval_reason?: string | null;
 }
 
 export interface ServiceOrder {

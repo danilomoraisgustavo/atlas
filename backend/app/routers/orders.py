@@ -8,7 +8,7 @@ import json, shutil, uuid
 from ..database import get_db
 from ..deps import get_current_user, require_roles
 from ..models import ServiceOrder, OrderItem, Attachment, Vehicle, Notification, User
-from ..services.parser import parse_service_order
+from ..services.parser import looks_like_service, parse_service_order
 from ..services.audit import add_audit
 from ..services.notifications import manager
 from ..services.measurement_report import build_measurement_pdf
@@ -52,7 +52,8 @@ def _serialize_order(order: ServiceOrder):
             'id': item.id, 'item_code': item.item_code, 'description': item.description, 'item_type': item.item_type,
             'quantity': item.quantity, 'unit': item.unit, 'unit_price': item.unit_price, 'total_price': item.total_price,
             'confidence': item.confidence, 'need_evidence_count': item.need_evidence_count, 'done_evidence_count': item.done_evidence_count,
-            'manually_edited': item.manually_edited
+            'manually_edited': item.manually_edited, 'service_execution_description': item.service_execution_description,
+            'approval_status': item.approval_status, 'approval_reason': item.approval_reason
         } for item in order.items],
         'attachments': [{
             'id': a.id, 'category': a.category, 'item_id': a.item_id, 'file_name': a.file_name, 'file_path': a.file_path,
@@ -78,6 +79,22 @@ async def _notify_order_users(db: Session, order: ServiceOrder, title: str, mess
             'id': notif.id, 'title': title, 'message': message, 'category': category, 'order_id': order.id, 'sound': True
         })
 
+
+def _approved_items(order: ServiceOrder):
+    approved = [item for item in order.items if item.approval_status != 'devolvido']
+    return approved or list(order.items)
+
+
+def _missing_service_descriptions(items_payload: list[dict]):
+    missing = []
+    for item in items_payload:
+        description = item.get('description') or ''
+        if not looks_like_service(description, item.get('unit')) and item.get('item_type') != 'servico':
+            continue
+        if not (item.get('service_execution_description') or '').strip():
+            missing.append(description or 'Servico sem descricao')
+    return missing
+
 @router.get('')
 def list_orders(status: str | None = None, plate: str | None = None, db: Session = Depends(get_db), user=Depends(get_current_user)):
     q = db.query(ServiceOrder)
@@ -95,7 +112,7 @@ def dashboard(db: Session = Depends(get_db), user=Depends(get_current_user)):
     if user.role == 'fornecedor':
         q = q.filter(ServiceOrder.supplier_user_id == user.id)
     orders = q.all()
-    statuses = ['aguardando_aprovacao','aprovada','reprovada','em_andamento','aguardando_validacao','concluida','retrabalho','medicao']
+    statuses = ['aguardando_aprovacao','aprovada','aprovada_parcial','reprovada','em_andamento','aguardando_validacao','concluida','retrabalho','medicao']
     metrics = {s: sum(1 for o in orders if o.status == s) for s in statuses}
     return {
         **metrics,
@@ -229,12 +246,73 @@ def upload_attachment(order_id: int, category: str = Form(...), item_id: int | N
 @router.post('/{order_id}/approve')
 async def approve_order(order_id: int, payload: dict | None = None, db: Session = Depends(get_db), user=Depends(require_roles('gestor','fiscal','admin'))):
     order = db.get(ServiceOrder, order_id)
-    if not order: raise HTTPException(404, 'Ordem não encontrada')
+    if not order: raise HTTPException(404, 'Ordem nao encontrada')
+    data = payload or {}
+    approved_item_ids = {int(item_id) for item_id in data.get('approved_item_ids', [])}
+    returned_items = data.get('returned_items', [])
+    returned_map: dict[int, str] = {}
+    for entry in returned_items:
+        try:
+            item_id = int(entry.get('item_id'))
+        except Exception:
+            continue
+        returned_map[item_id] = (entry.get('reason') or '').strip()
     prev = order.status
-    order.status = 'aprovada'; order.rejection_reason = None
+
+    if approved_item_ids or returned_map:
+        order_item_ids = {item.id for item in order.items}
+        unknown_ids = (approved_item_ids | set(returned_map.keys())) - order_item_ids
+        if unknown_ids:
+            raise HTTPException(400, f'Itens da ordem invalidos: {", ".join(str(item_id) for item_id in sorted(unknown_ids))}')
+        if approved_item_ids & set(returned_map.keys()):
+            raise HTTPException(400, 'Um mesmo item nao pode ser aprovado e devolvido ao mesmo tempo')
+        if approved_item_ids | set(returned_map.keys()) != order_item_ids:
+            raise HTTPException(400, 'Selecione o destino de todos os itens para concluir a aprovacao parcial')
+        if not approved_item_ids:
+            raise HTTPException(400, 'Selecione pelo menos um item para aprovar parcialmente')
+
+        for item in order.items:
+            if item.id in approved_item_ids:
+                item.approval_status = 'aprovado'
+                item.approval_reason = None
+            else:
+                reason = returned_map.get(item.id, '')
+                if not reason:
+                    raise HTTPException(400, f'Informe o motivo de devolucao do item {item.description}')
+                item.approval_status = 'devolvido'
+                item.approval_reason = reason
+
+        approved_count = sum(1 for item in order.items if item.approval_status == 'aprovado')
+        returned_count = sum(1 for item in order.items if item.approval_status == 'devolvido')
+        order.status = 'aprovada_parcial'
+        order.rejection_reason = f'{returned_count} item(ns) devolvido(s) ao fornecedor para ajuste.'
+        db.commit(); db.refresh(order)
+        add_audit(
+            db,
+            user=user,
+            action='Aprovacao parcial da ordem',
+            order_id=order.id,
+            previous_status=prev,
+            new_status=order.status,
+            details=f'{approved_count} item(ns) aprovado(s) e {returned_count} devolvido(s) ao fornecedor.',
+        )
+        await _notify_order_users(
+            db,
+            order,
+            'Ordem parcialmente aprovada',
+            f'Ordem {order.order_number or order.id} teve itens aprovados e outros devolvidos ao fornecedor para ajuste.',
+            'warning',
+        )
+        return _serialize_order(order)
+
+    for item in order.items:
+        item.approval_status = 'aprovado'
+        item.approval_reason = None
+    order.status = 'aprovada'
+    order.rejection_reason = None
     db.commit(); db.refresh(order)
-    add_audit(db, user=user, action='Aprovação da ordem', order_id=order.id, previous_status=prev, new_status=order.status)
-    await _notify_order_users(db, order, 'Ordem aprovada', f'Ordem {order.order_number or order.id} aprovada para execução.', 'success')
+    add_audit(db, user=user, action='Aprovacao da ordem', order_id=order.id, previous_status=prev, new_status=order.status)
+    await _notify_order_users(db, order, 'Ordem aprovada', f'Ordem {order.order_number or order.id} aprovada para execucao.', 'success')
     return _serialize_order(order)
 
 @router.post('/{order_id}/reject')
@@ -255,12 +333,12 @@ async def reject_order(order_id: int, payload: dict, db: Session = Depends(get_d
 async def start_service(order_id: int, payload: dict | None = None, db: Session = Depends(get_db), user=Depends(require_roles('fornecedor'))):
     order = db.get(ServiceOrder, order_id)
     if not order or order.supplier_user_id != user.id: raise HTTPException(404, 'Ordem não encontrada')
-    if order.status != 'aprovada': raise HTTPException(400, 'A ordem precisa estar aprovada')
+    if order.status not in {'aprovada', 'aprovada_parcial'}: raise HTTPException(400, 'A ordem precisa estar aprovada')
     estimated_completion = (payload or {}).get('estimated_completion')
     if not estimated_completion:
         raise HTTPException(400, 'Informe a previsÃ£o de conclusÃ£o antes de iniciar o serviÃ§o')
     # require evidence per item before start
-    for item in order.items:
+    for item in _approved_items(order):
         count = db.query(Attachment).filter(Attachment.order_id == order.id, Attachment.category == 'before', Attachment.item_id == item.id).count()
         if count < item.need_evidence_count:
             raise HTTPException(400, f'Evidência inicial obrigatória para o item {item.description}')
@@ -277,7 +355,7 @@ async def finish_service(order_id: int, payload: dict | None = None, db: Session
     order = db.get(ServiceOrder, order_id)
     if not order or order.supplier_user_id != user.id: raise HTTPException(404, 'Ordem não encontrada')
     if order.status not in {'em_andamento','retrabalho'}: raise HTTPException(400, 'A ordem precisa estar em andamento ou retrabalho')
-    for item in order.items:
+    for item in _approved_items(order):
         count = db.query(Attachment).filter(Attachment.order_id == order.id, Attachment.category == 'after', Attachment.item_id == item.id).count()
         if count < item.done_evidence_count:
             raise HTTPException(400, f'Evidência final obrigatória para o item {item.description}')

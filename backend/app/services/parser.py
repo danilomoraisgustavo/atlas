@@ -6,6 +6,14 @@ from pypdf import PdfReader
 
 NUMBER_RE = re.compile(r"\d{1,3}(?:\.\d{3})*,\d{2}")
 PLATE_RE = re.compile(r"\b[A-Z]{3}-?\d{4}\b")
+SERVICE_KEYWORDS = [
+    'MAO DE OBRA', 'M?O DE OBRA', 'SERVICO', 'SERVI?O', 'SCANNER', 'RETIFICA', 'TROCA',
+    'REPARO', 'RECUPERACAO', 'RECUPERA??O', 'REVISAO', 'REVIS?O', 'ELETRICA', 'EL?TRICA',
+    'ELETRICO', 'EL?TRICO', 'MECANICA', 'MEC?NICA', 'MECANICO', 'MEC?NICO', 'INSTALACAO',
+    'INSTALA??O', 'DIAGNOSTICO', 'DIAGN?STICO', 'MANUTENCAO', 'MANUTEN??O', 'LIMPEZA',
+    'REGULAGEM', 'ALINHAMENTO', 'BALANCEAMENTO'
+]
+SERVICE_UNITS = {'SV', 'MO', 'HR', 'HS'}
 
 
 def _to_float_br(value: str) -> float:
@@ -120,11 +128,12 @@ def _parse_items(text: str):
         if not m:
             continue
         code, desc, qty_raw, unit_raw, _gross, net_raw, total_raw = m.groups()
+        description = _normalize_item_description(desc)
 
         items.append({
             'item_code': code,
-            'description': desc.strip(),
-            'item_type': _infer_type(desc),
+            'description': description,
+            'item_type': _infer_type(description, unit_raw),
             'quantity': _to_float_br(qty_raw),
             'unit': unit_raw.split('/')[0],
             'unit_price': _to_float_br(net_raw),
@@ -132,14 +141,30 @@ def _parse_items(text: str):
             'confidence': 0.9,
             'need_evidence_count': 1,
             'done_evidence_count': 1,
+            'service_execution_description': None,
+            'approval_status': 'pendente',
+            'approval_reason': None,
         })
     return items
 
 
-def _infer_type(desc: str) -> str:
-    descu = desc.upper()
-    keywords = ['MAO DE OBRA', 'RECUPERACAO', 'SERVICO', 'SCANNER', 'RETIFICA', 'TROCA', 'REPARO']
-    return 'servico' if any(k in descu for k in keywords) else 'produto'
+def _normalize_item_description(desc: str) -> str:
+    description = re.sub(r'\s+', ' ', (desc or '')).strip(' -')
+    description = re.sub(r'^(?:MAO DE OBRA|M[?A]O DE OBRA)\s*[-:/]?\s*', 'Mao de obra ', description, flags=re.I)
+    description = re.sub(r'^SERVICO\s*[-:/]?\s*', 'Servico ', description, flags=re.I)
+    description = re.sub(r'^SERVI[C?]O\s*[-:/]?\s*', 'Servico ', description, flags=re.I)
+    description = re.sub(r'\s+', ' ', description).strip()
+    return description
+
+
+def looks_like_service(desc: str, unit_raw: str | None = None) -> bool:
+    descu = (desc or '').upper()
+    unitu = (unit_raw or '').upper().split('/')[0]
+    return any(keyword in descu for keyword in SERVICE_KEYWORDS) or unitu in SERVICE_UNITS
+
+
+def _infer_type(desc: str, unit_raw: str | None = None) -> str:
+    return 'servico' if looks_like_service(desc, unit_raw) else 'produto'
 
 
 def _estimate_confidence(order_number, plate, items, total_value):
