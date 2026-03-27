@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { AuthUser, LoginResponse } from '@/types/app';
-import { apiFetch, ApiError } from '@/api/client';
+import { apiFetch, ApiError, AUTH_REQUIRED_EVENT } from '@/api/client';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -31,6 +31,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
     setIsLoading(false);
+  }, []);
+
+  useEffect(() => {
+    const handleAuthRequired = () => {
+      setUser(null);
+      setToken(null);
+      localStorage.removeItem(STORAGE_KEY);
+    };
+
+    window.addEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
   }, []);
 
   const login = async (email: string, password: string) => {

@@ -1,6 +1,7 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const LOADING_START_EVENT = 'atlas-loading:start';
 const LOADING_END_EVENT = 'atlas-loading:end';
+export const AUTH_REQUIRED_EVENT = 'atlas-auth:required';
 
 export class ApiError extends Error {
   status: number;
@@ -75,6 +76,14 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
         detail = payload.detail || detail;
       } catch {
         detail = await response.text();
+      }
+
+      if (response.status === 401 && typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent(AUTH_REQUIRED_EVENT, {
+            detail: { message: detail || 'Sua sessão não está ativa.' },
+          }),
+        );
       }
 
       throw new ApiError(response.status, detail);
